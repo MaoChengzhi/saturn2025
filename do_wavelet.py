@@ -19,7 +19,9 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def do_wavelet(sst, dt, time=None, unit='Year', fig_name=None, num=50,
                title='Signal', ylabel='Variation', cmap='Purples', 
-               show_peaks=False, fill_nan=True, idx=None, fontsize=15, **kwargs):
+               show_peaks=False, fill_nan=True, idx=None, fontsize=15, 
+               noplot=True,
+               **kwargs):
     '''
     sst: equal-grid time series of data
     dt: time difference between two points
@@ -73,7 +75,8 @@ def do_wavelet(sst, dt, time=None, unit='Year', fig_name=None, num=50,
     #------------------------------------------------------ Plotting
 
     #--- Plot time series
-    fig = plt.figure(num, figsize=(12, 8))
+    # fig = plt.figure(num, figsize=(12, 8))
+    fig = plt.figure( figsize=(12, 8))
     gs = GridSpec(2, 4, wspace=0.2)
     plt.subplots_adjust(left=0.1, bottom=0.1, right=0.95, top=0.95, wspace=0, hspace=0.3)
     plt.subplot(gs[0, 0:4])
@@ -188,9 +191,20 @@ def do_wavelet(sst, dt, time=None, unit='Year', fig_name=None, num=50,
     plt.tight_layout()
 
 
-    plt.show()
-    if fig_name is not None:
-        plt.savefig(fig_name, dpi=300)
+
+    # CLOSE fig
+
+    if noplot:
+        
+        
+        if fig_name is not None:
+            # do not use plt.savefig directly, or the figure will be blank
+            fig.savefig(fig_name, bbox_inches='tight')
+            plt.close(fig)
+        plt.close(fig)
+        return(period,global_ws,periods, starts, ends)
+    else:
+        plt.show()
     
     return(periods, starts, ends)
 
