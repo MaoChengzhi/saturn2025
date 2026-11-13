@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 # ====== EDIT THESE TWO LINES IF YOU WANT ======
 BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/pds/data/co-s_j_e_v-spice-6-v1.0/cosp_1000/"
-OUT_DIR = "data/spice/"   # can be absolute: r"C:\data\cosp_1000" or "/data/cosp_1000"
+OUT_DIR = "../data/spice-cassini/"   # can be absolute: r"C:\data\cosp_1000" or "/data/cosp_1000"
 # =============================================
 
 
