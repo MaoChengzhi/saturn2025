@@ -309,11 +309,13 @@ def krtp_sampling_info(time, *, nyquist_multiplier=2):
 
 # Field-aligned coordinate (FAC) decomposition
 
-def fac_decompose_dB(df, start_time, end_time, resolution="sec"):
+def fac_decompose_dB(df, start_time, end_time, resolution="sec", *, background_s=1200, trim_s=600):
     """Add FAC columns and trim 10 minutes from each requested endpoint.
 
     The background mean uses 1,200 samples for "sec" and a centered
-    1,200-second window over native samples for "full".
+    1,200-second window over native samples for "full". background_s changes
+    that length (samples for "sec", seconds for "full") and trim_s the time
+    removed from each endpoint; the defaults are the Cassini settings.
 
     The per-sample fac_reference_axis is THETA when abs(b_hat_R) exceeds
     _FAC_RADIAL_ALIGNMENT_LIMIT, R otherwise, and missing when the background
@@ -344,11 +346,12 @@ def fac_decompose_dB(df, start_time, end_time, resolution="sec"):
     B_vec = components.to_numpy()
     if resolution == "full":
         components = components.set_axis(pd.DatetimeIndex(df["TIME"]))
-        background = components.rolling("1200s", center=True).mean()
-        missing = components.isna().rolling("1200s", center=True).sum()
+        window = f"{background_s:g}s"
+        background = components.rolling(window, center=True).mean()
+        missing = components.isna().rolling(window, center=True).sum()
         background = background.mask(missing > 0)
     else:
-        background = components.rolling(window=1200, center=True).mean()
+        background = components.rolling(window=int(background_s), center=True).mean()
     B0_vec = background.to_numpy()
     df[['B0_R','B0_THETA','B0_PHI']] = B0_vec
 
@@ -394,7 +397,8 @@ def fac_decompose_dB(df, start_time, end_time, resolution="sec"):
     )
 
     # delete the first and last 10 minutes to avoid nan values
-    df=df[(df['TIME']>=start_time+pd.Timedelta(minutes=10)) & (df['TIME']<=end_time-pd.Timedelta(minutes=10))].reset_index(drop=True)
+    trim = pd.Timedelta(seconds=trim_s)
+    df=df[(df['TIME']>=start_time+trim) & (df['TIME']<=end_time-trim)].reset_index(drop=True)
     return df
 
 def read_and_process_data(start_time, end_time, resolution="sec", *, nyquist_multiplier=2):
