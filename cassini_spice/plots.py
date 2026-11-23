@@ -10,6 +10,7 @@ from cassini_spice.locations import SATURN_RADIUS_KM, read_saturn_positions
 
 
 __all__ = [
+    "draw_wave_orbit_context",
     "plot_cassini_trajectory",
     "plot_trajectory_2d",
     "plot_trajectory_3d",
@@ -69,6 +70,42 @@ def _format_time_axis(ax):
     locator = mdates.AutoDateLocator()
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
+
+def draw_wave_orbit_context(ax, start_time, end_time, *, frame="CASSINI_KSM"):
+    """Draw the Cassini event track and simultaneous midpoint positions on ``ax``.
+
+    The Saturn-centered XY projection uses Saturn radii (60,268 km) in
+    CASSINI_KSM (or KSM) or J2000. The track samples each minute and both
+    endpoints. Naive timestamps are UTC. Missing local kernels or ephemeris
+    coverage raise before the axis is drawn.
+    """
+    positions = read_saturn_positions(start_time, end_time, frame=frame)
+    start, end = positions["utc"].min(), positions["utc"].max()
+    midpoint = start + (end - start) / 2
+    at_midpoint = positions.loc[positions["utc"].eq(midpoint)]
+    if at_midpoint.empty:
+        at_midpoint = read_saturn_positions(midpoint, midpoint, frame=frame)
+
+    cassini = positions.loc[positions["body"].eq("Cassini")]
+    ax.add_patch(Circle((0, 0), 1, color="#D1AD77", alpha=0.6, label="Saturn"))
+    ax.plot(cassini["x_Rs"], cassini["y_Rs"], color=_BODY_COLORS["Cassini"],
+            lw=2, label="Cassini track", zorder=3)
+    for row in at_midpoint.itertuples(index=False):
+        is_cassini = row.body == "Cassini"
+        color = _BODY_COLORS[row.body]
+        ax.scatter(row.x_Rs, row.y_Rs, edgecolors=color,
+                   facecolors="none" if is_cassini else color,
+                   marker="D" if is_cassini else "o", s=38, zorder=4,
+                   label="Cassini midpoint" if is_cassini else row.body)
+
+    epoch = midpoint.tz_localize(None).isoformat(sep=" ")
+    ax.set_title(f"Orbit context · {positions.attrs['frame']} XY\nPositions at {epoch} UTC",
+                 loc="left", fontsize="medium")
+    ax.set(xlabel=r"X ($R_S$)", ylabel=r"Y ($R_S$)", aspect="equal")
+    ax.grid(alpha=0.18)
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize="small")
+    return ax
 
 
 def plot_cassini_trajectory(

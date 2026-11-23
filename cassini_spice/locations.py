@@ -245,6 +245,68 @@ def cassini_locations_at(times, *, frame="KSM"):
     return result
 
 
+def cassini_spin_positions_at(times):
+    """Return Cassini radius in Saturn radii and spin latitude in degrees.
+
+    Positions are geometric and Saturn-centered in IAU_SATURN. Latitude is
+    planetocentric, measured from the spin equator. The UTC index preserves
+    input order and duplicates, and naive timestamps are interpreted as UTC.
+    """
+    epochs = pd.DatetimeIndex(pd.to_datetime(list(times), utc=True, format="mixed"))
+    if epochs.empty or epochs.hasnans:
+        raise ValueError("Provide at least one valid UTC timestamp")
+
+    xyz_km = np.empty((len(epochs), 3))
+    for year in epochs.year.unique():
+        in_year = epochs.year == year
+        utc = epochs[in_year]
+        with _load_position_kernels(latest_tm_for_year(year)):
+            et = _ephemeris_times(utc)
+            try:
+                xyz_km[in_year], _ = spice.spkpos("CASSINI", et, "IAU_SATURN", "NONE", "SATURN")
+            except SpiceSPKINSUFFDATA as error:
+                raise ValueError(
+                    f"Incomplete local SPICE coverage for Cassini between {utc.min()} and {utc.max()}"
+                ) from error
+
+    x_km, y_km, z_km = xyz_km.T
+    rho_km = np.hypot(x_km, y_km)
+    return pd.DataFrame(
+        {
+            "r_RS": np.hypot(rho_km, z_km) / SATURN_RADIUS_KM,
+            "lat_spin_deg": np.degrees(np.arctan2(z_km, rho_km)),
+        },
+        index=epochs.rename("utc"),
+    )
+
+
+def add_dipole_position(df):
+    """Return a copy with spin-frame geometry interpolated at each MAG time.
+
+    Query a 60 s UTC grid with at least 60 s of margin on each side. Keep
+    TIME, index and row order as supplied. Invalid timestamps and unavailable
+    SPICE coverage raise rather than providing extrapolated positions.
+    """
+    if "TIME" not in df:
+        raise ValueError("MAG data must include a TIME column")
+    result = df.copy()
+    if df.empty:
+        return result.assign(r_RS=np.nan, lat_spin_deg=np.nan)
+
+    times = pd.DatetimeIndex(pd.to_datetime(df["TIME"], utc=True, format="mixed"))
+    if times.hasnans:
+        raise ValueError("MAG TIME contains missing timestamps")
+    margin = pd.Timedelta(minutes=1)
+    grid = pd.date_range(times.min().floor("min") - margin,
+                         times.max().ceil("min") + margin, freq="min")
+    positions = cassini_spin_positions_at(grid)
+    offsets = (times - grid[0]).total_seconds()
+    grid_offsets = (grid - grid[0]).total_seconds()
+    for column in ("r_RS", "lat_spin_deg"):
+        result[column] = np.interp(offsets, grid_offsets, positions[column])
+    return result
+
+
 def generate_cassini_locations(start_time, stop_time, *, frame="KSM", step_seconds=60):
     """Make a location table on a regular UTC grid with an exclusive stop."""
     times = _time_grid(start_time, stop_time, step_seconds, include_end=False)
