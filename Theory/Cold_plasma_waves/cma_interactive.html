@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interactive CMA Diagram</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"></script>
+<script>window.Plotly || document.write('<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"><\/script>')</script>
+<style>
+  :root { --bg:#fafaf8; --fg:#1d1d1f; --muted:#666; --card:#fff; --line:#ddd; --accent:#1f5aa6; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  header { padding:14px 20px 6px; }
+  h1 { font-size:19px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; }
+  .controls { display:flex; flex-wrap:wrap; gap:14px; align-items:center; padding:8px 20px; }
+  .controls label { white-space:nowrap; }
+  input[type=number] { width:80px; }
+  .wrap { display:grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); gap:14px; padding:6px 20px 20px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px; min-width:0; }
+  #cma { height:640px; } #polar { height:440px; }
+  .tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
+  .tabs button { border:1px solid var(--line); background:#f1f1ef; border-radius:5px; padding:3px 9px; cursor:pointer; }
+  .tabs button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  td, th { border-bottom:1px solid #eee; padding:3px 6px; text-align:left; }
+  .pos { color:#1a7f37; } .neg { color:#b42318; }
+  .note { color:var(--muted); font-size:12px; margin-top:6px; }
+  code { background:#f1f1ef; padding:0 3px; border-radius:3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Interactive CMA diagram — cold plasma, electrons + one ion species</h1>
+  <div class="sub">Click anywhere on the diagram to plot the phase-velocity wave-normal surface v<sub>ph</sub>/c (B<sub>0</sub> points up, θ measured clockwise from B<sub>0</sub>). Formulas: Bellan (2006) Eq. 6.12, 6.47–6.49; layout after CMA-Lab/CMA-Diagram. Same physics as <code>cold_plasma.py</code>.</div>
+</header>
+
+<div class="controls">
+  <label>m<sub>i</sub>/m<sub>e</sub>
+    <select id="muSel">
+      <option value="2.5" selected>2.5 (teaching)</option>
+      <option value="1836.15267">H⁺ (1836)</option>
+      <option value="29166.2">O⁺ (16 amu)</option>
+      <option value="32812">W⁺ water group (18 amu)</option>
+      <option value="58332.4">S⁺ (32 amu)</option>
+      <option value="custom">custom…</option>
+    </select>
+    <input id="muCustom" type="number" value="10" step="any" style="display:none">
+  </label>
+  <label>axes <select id="scale"><option value="linear">linear</option><option value="log">log–log</option></select></label>
+  <label>X max <input id="xmax" type="number" value="1.5" step="any"></label>
+  <label>Y max <input id="ymax" type="number" value="3.5" step="any"></label>
+  <label title="For fixed n_e and B0, varying ω moves along Y = (Ωe/ωpe)·√X">
+    <input id="rayOn" type="checkbox"> fixed-plasma ray, Ω<sub>e</sub>/ω<sub>pe</sub> = <input id="ray" type="number" value="0.5" step="any"></label>
+  <button id="clear">clear points</button>
+  <label>Location <select id="loc"><option value="">— none —</option></select></label>
+  <span class="note">(changing m<sub>i</sub>/m<sub>e</sub> clears the points; scroll to zoom, drag to pan)</span>
+</div>
+
+<div id="locInfo" class="controls note" style="display:none; padding-top:0"></div>
+
+<div class="wrap">
+  <div class="card"><div id="cma"></div>
+    <div class="note">Shading: number of propagating modes (n² &gt; 0 at some θ): white 0, light 1, darker 2. Bounding surfaces: cutoffs P=0, R=0, L=0; resonances R=∞ (ω=Ω<sub>e</sub>), L=∞ (ω=Ω<sub>i</sub>), S=0 (hybrids).</div>
+  </div>
+  <div class="card">
+    <div class="tabs" id="tabs"></div>
+    <div id="polar"></div>
+    <table id="info"></table>
+    <div class="note">Root labels: R/L = limit at θ=0 (n²=R or L), O/X = limit at θ=90° (n²=P or RL/S). Red dash-dot lines: resonance cone tan²θ<sub>res</sub> = −P/S. Dashed circle: v<sub>ph</sub> = c. Types (Bellan Fig. 6.3): ellipsoid, dumbbell (θ &lt; θ<sub>res</sub>), wheel (θ &gt; θ<sub>res</sub>).</div>
+  </div>
+</div>
+
+<script>
+// ---------------- physics (mirrors cold_plasma.py) ----------------
+function stix(X, Y, mu) {
+  const R = 1 - X/(1 - Y) - X/(mu + Y);
+  const L = 1 - X/(1 + Y) - X/(mu - Y);
+  const P = 1 - X - X/mu;
+  return {S: 0.5*(R+L), D: 0.5*(R-L), P, R, L};
+}
+function n2roots(th, p) {
+  const s2 = Math.sin(th)**2, c2 = Math.cos(th)**2;
+  const A = p.S*s2 + p.P*c2, B = p.R*p.L*s2 + p.P*p.S*(1 + c2), C = p.P*p.R*p.L;
+  const sq = Math.sqrt(Math.max(B*B - 4*A*C, 0));
+  const q = 0.5*(B + (B >= 0 ? 1 : -1)*sq);
+  const r1 = q/A, r2 = C/q;
+  return B >= 0 ? [r1, r2] : [r2, r1];          // [plus, minus]
+}
+function vph(n2) {
+  if (!isFinite(n2)) return 0;                   // resonance
+  return n2 > 0 ? 1/Math.sqrt(n2) : null;        // null = evanescent
+}
+function labels(p) {
+  const e = 1e-6, Xm = p.R*p.L/p.S, out = [];
+  const a = n2roots(e, p), b = n2roots(Math.PI/2 - e, p);
+  for (let k = 0; k < 2; k++) {
+    let l0 = "", l90 = "";
+    if (isFinite(a[k]) && a[k] > 0) l0 = Math.abs(a[k]-p.R) <= Math.abs(a[k]-p.L) ? "R" : "L";
+    if (isFinite(b[k]) && b[k] > 0) l90 = Math.abs(b[k]-p.P) <= Math.abs(b[k]-Xm) ? "O" : "X";
+    out.push([l0, l90]);
+  }
+  return out;
+}
+function wnType(th, v) {
+  const ok = v.map(x => x !== null && x > 0);
+  if (!ok.some(Boolean)) return "none";
+  // samples closest to 0 and 90 deg (a resonance cone can sit within 0.01 deg of 90 deg)
+  const m = th.map(t => ((t % Math.PI) + Math.PI) % Math.PI);
+  const d0 = m.map(x => Math.min(x, Math.PI - x)), d90 = m.map(x => Math.abs(x - Math.PI/2));
+  const min0 = Math.min(...d0), min90 = Math.min(...d90);
+  let n0 = false, n90 = false, cnt = 0;
+  th.forEach((_, i) => {
+    if (ok[i]) { cnt++; if (d0[i] <= min0 + 1e-12) n0 = true; if (d90[i] <= min90 + 1e-12) n90 = true; }
+  });
+  if (n0 && n90 && cnt/th.length > 0.98) return "ellipsoid";
+  if (n0 && !n90) return "dumbbell";
+  if (n90 && !n0) return "wheel";
+  return "partial";
+}
+function nModes(X, Y, mu) {
+  const p = stix(X, Y, mu); let m = 0;
+  for (let k = 0; k < 2; k++) {
+    for (let i = 0; i <= 18; i++) { const r = n2roots(i/18*Math.PI/2, p)[k]; if (r > 0 || !isFinite(r)) { m++; break; } }
+  }
+  return m;
+}
+function boundaries(Y, mu) {
+  const c = a => (isFinite(a) && a > 0) ? a : null;
+  return {
+    "R=0": Y.map(y => c((1-y)*(mu+y)/(mu+1))),
+    "L=0": Y.map(y => c((1+y)*(mu-y)/(mu+1))),
+    "S=0": Y.map(y => c(1/(1/(1-y*y) + mu/(mu*mu-y*y)))),
+    "P=0": Y.map(_ => mu/(mu+1)),
+  };
+}
+const lin = (a, b, n) => Array.from({length:n}, (_, i) => a + (b-a)*i/(n-1));
+const geo = (a, b, n) => lin(Math.log10(a), Math.log10(b), n).map(e => 10**e);
+
+// ---------------- state & UI ----------------
+const st = { mu: 2.5, scale: "linear", xmax: 1.5, ymax: 3.5, pts: [], cur: -1 };
+const $ = id => document.getElementById(id);
+
+function readControls() {
+  const v = $("muSel").value;
+  $("muCustom").style.display = v === "custom" ? "" : "none";
+  st.mu = v === "custom" ? parseFloat($("muCustom").value) : parseFloat(v);
+  st.scale = $("scale").value;
+  st.xmax = parseFloat($("xmax").value); st.ymax = parseFloat($("ymax").value);
+}
+function defaultLimits() {
+  if (st.scale === "linear") { $("xmax").value = 1.5; $("ymax").value = Math.max(3.5, 1.4*st.mu).toPrecision(3); }
+  else { $("xmax").value = 1e4; $("ymax").value = (Math.max(10, 30*st.mu)).toPrecision(2); }
+}
+
+function drawCMA() {
+  readControls();
+  const log = st.scale === "log", mu = st.mu;
+  const xlo = log ? 1e-3 : 0, ylo = log ? 1e-2 : 0;
+  const nx = 220, ny = 220;
+  const xs = log ? geo(xlo, st.xmax, nx) : lin(st.xmax/nx/2, st.xmax, nx);
+  const ys = log ? geo(ylo, st.ymax, ny) : lin(st.ymax/ny/2, st.ymax, ny);
+  const z = ys.map(y => xs.map(x => nModes(x, y, mu)));
+  const traces = [{
+    type: "heatmap", x: xs, y: ys, z, zmin: 0, zmax: 2, showscale: false,
+    colorscale: [[0, "#ffffff"], [0.5, "#e7eef8"], [1, "#c9d9ef"]],
+    hovertemplate: "X=%{x:.4g}<br>Y=%{y:.4g}<br>modes=%{z}<extra></extra>",
+  }];
+  const Y = log ? geo(ylo, st.ymax, 4000) : lin(0, st.ymax, 4000);
+  const b = boundaries(Y, mu);
+  const col = {"R=0":"#8c6d1f","L=0":"#2a9d8f","S=0":"#e9c46a","P=0":"#264653"};
+  delete b["S=0"];
+  for (const k in b) traces.push({type:"scatter", mode:"lines", x:b[k], y:Y, name:k, line:{color:col[k], width:2.5}, hoverinfo:"skip", connectgaps:false});
+  // S = 0 drawn as Y(X): the lower-hybrid branch flattens to Y -> sqrt(mu) as X -> inf,
+  // which a grid in Y cannot follow. With u = Y^2, S = 0 is
+  // u^2 + u (X(1+mu) - 1 - mu^2) + mu^2 (1-X) - X mu = 0  ->  upper hybrid (smaller u), lower hybrid (larger u)
+  const Xs = log ? geo(xlo, st.xmax, 4000) : lin(0, st.xmax, 4000), uh = [], lh = [];
+  for (const x of Xs) {
+    const bb = x*(1+mu) - 1 - mu*mu, cc = mu*mu*(1-x) - x*mu, D = Math.max(bb*bb - 4*cc, 0);
+    const q = -0.5*(bb + (bb >= 0 ? 1 : -1)*Math.sqrt(D)), r = [q, cc/q].sort((a, c) => a - c);
+    uh.push(r[0] > 0 ? Math.sqrt(r[0]) : null); lh.push(r[1] > 0 ? Math.sqrt(r[1]) : null);
+  }
+  traces.push({type:"scatter", mode:"lines", x:Xs, y:uh, name:"S=0", legendgroup:"S", line:{color:col["S=0"], width:2.5}, hoverinfo:"skip", connectgaps:false});
+  traces.push({type:"scatter", mode:"lines", x:Xs, y:lh, name:"S=0", legendgroup:"S", showlegend:false, line:{color:col["S=0"], width:2.5}, hoverinfo:"skip", connectgaps:false});
+  const xl = [log ? xlo : 0, st.xmax];
+  traces.push({type:"scatter", mode:"lines", x:xl, y:[1,1], name:"R=∞ (ω=Ωe)", line:{color:"#3a86ff", width:2.5}, hoverinfo:"skip"});
+  traces.push({type:"scatter", mode:"lines", x:xl, y:[mu,mu], name:"L=∞ (ω=Ωi)", line:{color:"#b5179e", width:2.5}, hoverinfo:"skip"});
+  if ($("rayOn").checked) {
+    const r = parseFloat($("ray").value), Xr = log ? geo(xlo, st.xmax, 400) : lin(0, st.xmax, 400);
+    traces.push({type:"scatter", mode:"lines", x:Xr, y:Xr.map(x => r*Math.sqrt(x)), name:`ray Ωe/ωpe=${r}`, line:{color:"#444", dash:"dot", width:1.5}, hoverinfo:"skip"});
+  }
+  traces.push({type:"scatter", mode:"markers+text", x:st.pts.map(p=>p.X), y:st.pts.map(p=>p.Y),
+    text:st.pts.map((_, i)=>String(i+1)), textposition:"top right", name:"points",
+    marker:{size:10, color:"#fff", line:{color:"#1f5aa6", width:2}}, hoverinfo:"skip", showlegend:false});
+  const layout = {
+    margin:{l:60, r:10, t:30, b:50}, title:{text:`CMA diagram, m<sub>i</sub>/m<sub>e</sub> = ${+mu.toPrecision(6)}`, font:{size:14}},
+    xaxis:{title:{text:"X = ω<sub>pe</sub>²/ω²  (∝ density)"}, type:log?"log":"linear", range:log?[Math.log10(xlo), Math.log10(st.xmax)]:[0, st.xmax]},
+    yaxis:{title:{text:"Y = Ω<sub>e</sub>/ω  (∝ B<sub>0</sub>)"}, type:log?"log":"linear", range:log?[Math.log10(ylo), Math.log10(st.ymax)]:[0, st.ymax]},
+    legend:{x:1, xanchor:"right", y:1, bgcolor:"rgba(255,255,255,0.85)"}, hovermode:"closest", dragmode:"pan",
+  };
+  Plotly.react("cma", traces, layout, {responsive:true, scrollZoom:true});
+}
+
+function clickToData(gd, ev, pt) {
+  // exact data coordinates of the mouse, not the heatmap cell centre
+  try {
+    const fl = gd._fullLayout, bb = gd.getBoundingClientRect();
+    const px = ev.clientX - bb.left - fl._size.l, py = ev.clientY - bb.top - fl._size.t;
+    const X = fl.xaxis.p2d(px), Y = fl.yaxis.p2d(py);
+    if (isFinite(X) && isFinite(Y) && X > 0 && Y > 0) return [X, Y];
+  } catch (e) {}
+  return [pt.x, pt.y];
+}
+
+function addPoint(X, Y) {
+  st.pts.push({X, Y, mu: st.mu}); st.cur = st.pts.length - 1;
+  drawCMA(); drawTabs(); drawPolar();
+}
+
+function drawTabs() {
+  $("tabs").innerHTML = "";
+  st.pts.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.textContent = `WNS ${i+1}`; b.className = i === st.cur ? "on" : "";
+    b.onclick = () => { st.cur = i; drawTabs(); drawPolar(); };
+    $("tabs").appendChild(b);
+  });
+}
+
+function drawPolar() {
+  if (st.cur < 0) {
+    Plotly.react("polar", [], {annotations:[{text:"click on the CMA diagram", showarrow:false, font:{size:15, color:"#888"}}], xaxis:{visible:false}, yaxis:{visible:false}, margin:{t:20,b:20}});
+    $("info").innerHTML = ""; return;
+  }
+  const {X, Y, mu} = st.pts[st.cur], p = stix(X, Y, mu);
+  const N = 1441, th = lin(0, 2*Math.PI, N), deg = th.map(t => t*180/Math.PI);
+  const roots = th.map(t => n2roots(t, p));
+  const v = [roots.map(r => vph(r[0])), roots.map(r => vph(r[1]))];
+  const lab = labels(p), cols = ["#2a9d8f", "#c9a227"];
+  const vals = v.flat().filter(x => x !== null);
+  const vmax = vals.length ? Math.max(...vals) : 1;
+  const traces = [], rows = [];
+  for (let k = 0; k < 2; k++) {
+    const typ = wnType(th, v[k]);
+    const name = lab[k].filter(Boolean).join("/") || "–";
+    rows.push([k ? "minus" : "plus", name, typ]);
+    if (typ === "none") continue;
+    traces.push({type:"scatterpolar", mode:"lines", r:v[k], theta:deg, name:`${name}: ${typ}`, line:{color:cols[k], width:4}, connectgaps:false});
+    const ann = [];
+    if (lab[k][0] && v[k][0] !== null) traces.push({type:"scatterpolar", mode:"text", r:[v[k][0]*1.1], theta:[0], text:[lab[k][0]], textfont:{color:"#50258c", size:14}, showlegend:false, hoverinfo:"skip"});
+    const i90 = (N-1)/4;
+    if (lab[k][1] && v[k][i90] !== null) traces.push({type:"scatterpolar", mode:"text", r:[v[k][i90]*1.12], theta:[90], text:[lab[k][1]], textfont:{color:"#50258c", size:14}, showlegend:false, hoverinfo:"skip"});
+  }
+  if (vmax > 0.2 && vmax < 4) traces.push({type:"scatterpolar", mode:"lines", r:th.map(_=>1), theta:deg, name:"v_ph = c", line:{color:"#000", dash:"dash", width:1}, hoverinfo:"skip"});
+  let tres = null;
+  if (-p.P/p.S > 0) {
+    tres = Math.atan(Math.sqrt(-p.P/p.S))*180/Math.PI;
+    for (const t of [tres, 180-tres, 180+tres, 360-tres])
+      traces.push({type:"scatterpolar", mode:"lines", r:[0, vmax*1.15], theta:[t, t], line:{color:"crimson", dash:"dashdot", width:1}, showlegend:false, hoverinfo:"skip"});
+  }
+  const layout = {
+    margin:{l:40, r:40, t:40, b:30},
+    title:{text:`v<sub>ph</sub>/c (${st.cur+1}):  X=${X.toPrecision(4)}, Y=${Y.toPrecision(4)}, m<sub>i</sub>/m<sub>e</sub>=${+mu.toPrecision(6)}`, font:{size:13}},
+    polar:{angularaxis:{rotation:90, direction:"clockwise", dtick:45}, radialaxis:{range:[0, vmax*1.25 || 1], angle:90, tickangle:90}},
+    legend:{orientation:"h", y:-0.08},
+    annotations: traces.length ? [] : [{text:"no propagating mode (all evanescent)", showarrow:false, font:{size:14, color:"#888"}}],
+  };
+  Plotly.react("polar", traces, layout, {responsive:true});
+  const f = x => isFinite(x) ? `<span class="${x>0?'pos':'neg'}">${x.toPrecision(4)}</span>` : "∞";
+  const w = Math.sqrt(1/X);   // omega / omega_pe
+  $("info").innerHTML =
+    `<tr><th>S</th><td>${f(p.S)}</td><th>D</th><td>${f(p.D)}</td><th>P</th><td>${f(p.P)}</td></tr>` +
+    `<tr><th>R</th><td>${f(p.R)}</td><th>L</th><td>${f(p.L)}</td><th>RL/S</th><td>${f(p.R*p.L/p.S)}</td></tr>` +
+    `<tr><th>ω/ω<sub>pe</sub></th><td>${w.toPrecision(4)}</td><th>ω/Ω<sub>e</sub></th><td>${(1/Y).toPrecision(4)}</td><th>ω/Ω<sub>i</sub></th><td>${(mu/Y).toPrecision(4)}</td></tr>` +
+    `<tr><th>θ<sub>res</sub></th><td colspan="5">${tres === null ? "no resonance cone (P/S > 0)" : tres.toFixed(2) + "°"}</td></tr>` +
+    rows.map(r => `<tr><th>${r[0]} root</th><td colspan="2">${r[1]}</td><td colspan="3">${r[2]}</td></tr>`).join("");
+}
+
+// ---------------- Saturn / Jupiter event presets (same values as notebook Section 10.3) ----------------
+// |B|: mean measured field in the event window (Cassini / Juno MAG). n_e: typical model value, NOT measured:
+// Saturn from Kamran et al. (2025) Figs. 6-8; Jupiter from Bagenal & Delamere (2011), Bagenal et al. (2015), Bagenal & Dols (2020).
+// A/Z: ICW ion used by the quick-check notebooks (a Z=2 ion of mass A behaves like a Z=1 ion of mass A/2 in cold-plasma theory).
+const AMU_ME = 1822.888;
+const PRESETS = [
+  {label:"Saturn L≈4.7 · ICW 2010-12-21 03:00 (Meeks+2016)",        B:185.8, ne:60,   A:18, Z:1, ion:"H₂O⁺", f:0.1433},
+  {label:"Saturn L≈6.6 · ICW + mirror 2009-10-13 20:50 (Chou & Cheng 2017)", B:58.6, ne:20, A:18, Z:1, ion:"H₂O⁺", f:0.040},
+  {label:"Saturn L≈7.1 · ICW 2007-09-30 02:42 (Chou & Cheng 2017)", B:49.2,  ne:15,   A:18, Z:1, ion:"H₂O⁺", f:0.039},
+  {label:"Jupiter Io torus 5.9 RJ · Juno PJ57 2023-12-30 08:14",    B:2000,  ne:2000, A:32, Z:1, ion:"S⁺",   f:0.534},
+  {label:"Jupiter Europa orbit 9.4 RJ · Juno PJ45 2022-09-29 09:20", B:436,  ne:150,  A:16, Z:2, ion:"O²⁺",  f:0.458},
+  {label:"Jupiter 93 RJ pre-dawn · EMIC 2017-07-24 01:49 (Chakraborty+2025)", B:7.2, ne:0.05, A:16, Z:2, ion:"O²⁺", f:0.0083},
+];
+function presetPoint(e) {
+  const fce = 27.9925*e.B, fpe = 8978.66*Math.sqrt(e.ne), mu = e.A/e.Z*AMU_ME;
+  return {fce, fpe, mu, fci: fce/mu, ratio: fce/fpe, X: (fpe/e.f)**2, Y: fce/e.f};
+}
+PRESETS.forEach((e, i) => { const o = document.createElement("option"); o.value = i; o.textContent = e.label; $("loc").appendChild(o); });
+const fmtHz = x => x >= 1e3 ? (x/1e3).toPrecision(3) + " kHz" : x.toPrecision(3) + " Hz";
+function applyPreset() {
+  const v = $("loc").value;
+  if (v === "") { $("locInfo").style.display = "none"; return; }
+  const e = PRESETS[+v], q = presetPoint(e);
+  $("muSel").value = "custom"; $("muCustom").value = q.mu.toPrecision(6);
+  $("scale").value = "log";
+  $("xmax").value = (10**Math.ceil(Math.log10(q.X) + 1)).toExponential(0);
+  $("ymax").value = (10**Math.ceil(Math.log10(q.Y) + 1)).toExponential(0);
+  $("rayOn").checked = true; $("ray").value = q.ratio.toPrecision(3);
+  st.pts = []; st.cur = -1;
+  readControls(); addPoint(q.X, q.Y);
+  $("locInfo").style.display = "";
+  $("locInfo").innerHTML = `<span>|B| = ${e.B} nT (measured) · n<sub>e</sub> ≈ ${e.ne} cm⁻³ (model, ±×2) · f<sub>ce</sub> = ${fmtHz(q.fce)} · f<sub>pe</sub> = ${fmtHz(q.fpe)} · Ω<sub>e</sub>/ω<sub>pe</sub> = ${q.ratio.toPrecision(3)} · ion ${e.ion}: f<sub>ci</sub> = ${fmtHz(q.fci)} · wave f = ${fmtHz(e.f)} = ${(e.f/q.fci).toFixed(2)} f<sub>ci</sub> → point X = ${q.X.toPrecision(3)}, Y = ${q.Y.toPrecision(4)}. Click elsewhere on the dotted ray for other frequencies at the same place.</span>`;
+}
+$("loc").addEventListener("change", applyPreset);
+
+// ---------------- wiring ----------------
+["muSel", "muCustom"].forEach(id => $(id).addEventListener("change", () => { $("loc").value = ""; $("locInfo").style.display = "none"; readControls(); defaultLimits(); st.pts = []; st.cur = -1; drawCMA(); drawTabs(); drawPolar(); }));
+$("scale").addEventListener("change", () => { readControls(); defaultLimits(); drawCMA(); });
+["xmax", "ymax", "rayOn", "ray"].forEach(id => $(id).addEventListener("change", drawCMA));
+$("clear").onclick = () => { st.pts = []; st.cur = -1; drawCMA(); drawTabs(); drawPolar(); };
+
+drawCMA(); drawPolar();
+$("cma").on("plotly_click", d => {
+  if (!d.points.length || d.points[0].data.type !== "heatmap") return;
+  const [X, Y] = clickToData($("cma"), d.event, d.points[0]);
+  addPoint(X, Y);
+});
+
+// self-test against cold_plasma.py (see notebook section 9)
+window.selfTest = () => [[0.2, 0.6, 2.5], [1.2, 3.0, 2.5], [3.0, 100.0, 1836.15267]].map(([X, Y, mu]) => {
+  const p = stix(X, Y, mu);
+  return {X, Y, mu, p, v: [0, Math.PI/4, Math.PI/2].map(t => n2roots(t, p).map(vph))};
+});
+// start with the two example points from the notebook
+addPoint(0.2, 0.6); addPoint(0.2, 1.6);
+</script>
+</body>
+</html>

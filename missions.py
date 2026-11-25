@@ -26,6 +26,9 @@ class Mission:
     orbit_frame: str
     position_lookup: str | None = None   # adds r and latitude columns for dipole references
     fc_line_ions: tuple = field(default=())  # ions marked on the FFT panel
+    # Seconds by which an event's samples may fall short of its nominal length.
+    # Juno samples at 64.0001 Hz in UTC, so N samples span slightly less than N/64 s.
+    duration_slack_s: float = 0.0
 
     def hook(self, name):
         path = getattr(self, name)
@@ -75,6 +78,7 @@ JUNO = Mission(
     orbit_frame="JUNO_JSS",
     position_lookup=None,
     fc_line_ions=("He+", "O++", "O+/S++", "S+", "SO+", "SO2+"),
+    duration_slack_s=0.01,
 )
 
 MISSIONS = {"cassini": CASSINI, "juno": JUNO}
